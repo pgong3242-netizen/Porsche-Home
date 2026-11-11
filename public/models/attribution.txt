@@ -36,3 +36,13 @@ Official kit instructions: https://www.lego.com/en-us/service/building-instructi
 Building signage uses the Porsche wordmark outline from Porsche Design System,
 recolored red for the architectural scene:
 https://designsystem.porsche.com/v4/components/wordmark/configurator/
+
+Porsche 911 GT3 RS (porsche-911-gt3-rs.glb.gz)
+Original title: PORSHE GT3 RS
+Author: blenderbett (https://sketchfab.com/blenbett)
+Source: https://sketchfab.com/3d-models/porshe-gt3-rs-699799e735854ef582ae2aeea90b05d2
+License: Creative Commons Attribution 4.0 International (CC BY 4.0).
+https://creativecommons.org/licenses/by/4.0/
+Model obtained from https://github.com/sandman-sh/gt3-rs-showcase
+Original geometry, textures and materials retained; lossless gzip packaging only.
+Runtime scale and position normalized.

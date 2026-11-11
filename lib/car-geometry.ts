@@ -4,7 +4,8 @@ type Section = [number, number, number, number];
 export type CarPart = { group: THREE.Group; origin: THREE.Vector3; offset: THREE.Vector3 };
 export type ConceptCar = { group: THREE.Group; parts: CarPart[]; paint: THREE.MeshPhysicalMaterial; rims: THREE.MeshStandardMaterial };
 
-function loft(sections: Section[], segments = 40) {
+// Sweeps an elliptical cross-section along z; shared with the hard-surface vehicle module.
+export function loft(sections: Section[], segments = 40) {
   const vertices: number[] = [], indices: number[] = [];
   sections.forEach(([z, width, top, bottom]) => {
     for (let i = 0; i <= segments; i++) {
@@ -24,7 +25,7 @@ function loft(sections: Section[], segments = 40) {
   return geometry;
 }
 
-export function createConceptCar(color: string): ConceptCar {
+export function createConceptCar(color: string, style: 'coupe' | 'roadster' = 'coupe'): ConceptCar {
   const group = new THREE.Group();
   const paint = new THREE.MeshPhysicalMaterial({color, metalness: .57, roughness: .24, clearcoat: 1, clearcoatRoughness: .17});
   const glass = new THREE.MeshPhysicalMaterial({color: '#253c3e', metalness: .22, roughness: .12, clearcoat: 1, transparent: true, opacity: .82});
@@ -61,14 +62,25 @@ export function createConceptCar(color: string): ConceptCar {
   mesh(loft([[-2.19,.45,.67,.41],[-2.05,.74,.78,.3],[-1.65,.93,.84,.24],[-1.2,.98,.9,.24],[-.5,.91,.87,.23],[.4,.88,.79,.23],[1.15,.94,.74,.25],[1.7,.88,.69,.29],[2.08,.67,.59,.35],[2.24,.28,.49,.4]]),paint,shell);
   // The narrow roof, long rear window, and low rounded front are deliberately a 911-inspired silhouette.
   const cabin = part('glass',new THREE.Vector3(0,2.75,-.12));
-  mesh(loft([[-1.37,.55,.86,.76],[-1.05,.68,1.13,.77],[-.64,.7,1.38,.78],[-.16,.68,1.43,.78],[.28,.64,1.35,.76],[.66,.56,1.1,.74],[1.04,.4,.76,.7]],32),glass,cabin);
-  const roof = mesh(loft([[-.79,.47,1.37,1.32],[-.56,.51,1.44,1.39],[-.14,.5,1.48,1.43],[.22,.46,1.4,1.35]],24),paint,shell);
-  roof.userData.part = 'body';
+  if (style === 'coupe') mesh(loft([[-1.37,.55,.86,.76],[-1.05,.68,1.13,.77],[-.64,.7,1.38,.78],[-.16,.68,1.43,.78],[.28,.64,1.35,.76],[.66,.56,1.1,.74],[1.04,.4,.76,.7]],32),glass,cabin);
+  if (style === 'coupe') {
+    const roof = mesh(loft([[-.79,.47,1.37,1.32],[-.56,.51,1.44,1.39],[-.14,.5,1.48,1.43],[.22,.46,1.4,1.35]],24),paint,shell);
+    roof.userData.part = 'body';
+  } else {
+    mesh(loft([[.38,.63,1.24,.78],[.5,.61,1.19,.76],[.96,.46,.79,.72]],24),glass,cabin);
+    rod(shell,black,new THREE.Vector3(-.63,1.24,.38),new THREE.Vector3(.63,1.24,.38),.035);
+    for (const x of [-.37,.37]) {
+      const hoop=mesh(new THREE.TorusGeometry(.19,.035,8,24,Math.PI),rims,shell,x,1.13,-.52);
+      hoop.rotation.y=Math.PI;
+    }
+  }
   for (const sign of [-1,1]) {
-    rod(shell,paint,new THREE.Vector3(sign*.45,1.38,.21),new THREE.Vector3(sign*.62,.78,1.02),.032);
-    rod(shell,paint,new THREE.Vector3(sign*.49,1.36,-.77),new THREE.Vector3(sign*.68,.8,-1.36),.047);
-    rod(shell,paint,new THREE.Vector3(sign*.69,.83,-1.25),new THREE.Vector3(sign*.65,.79,.92),.027);
-    rod(shell,paint,new THREE.Vector3(sign*.68,.82,-.17),new THREE.Vector3(sign*.66,1.38,-.17),.026);
+    if (style === 'coupe') {
+      rod(shell,paint,new THREE.Vector3(sign*.45,1.38,.21),new THREE.Vector3(sign*.62,.78,1.02),.032);
+      rod(shell,paint,new THREE.Vector3(sign*.49,1.36,-.77),new THREE.Vector3(sign*.68,.8,-1.36),.047);
+      rod(shell,paint,new THREE.Vector3(sign*.69,.83,-1.25),new THREE.Vector3(sign*.65,.79,.92),.027);
+      rod(shell,paint,new THREE.Vector3(sign*.68,.82,-.17),new THREE.Vector3(sign*.66,1.38,-.17),.026);
+    }
     const mirror = mesh(new THREE.SphereGeometry(1,16,12),paint,shell,sign*.94,.93,.65); mirror.scale.set(.17,.075,.11);
     rod(shell,black,new THREE.Vector3(sign*.76,.86,.62),new THREE.Vector3(sign*.9,.92,.65),.025);
     box(shell,black,.028,.034,.25,sign*.904,.75,-.35);

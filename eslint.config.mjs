@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     ".sites-runtime/**",
     "outputs/**",
     "work/**",
+    // Vendored three.js of the engine-brokendown page, copied verbatim from the
+    // sibling exploded-view-studio project. Third-party, not Site source.
+    "public/engine-brokendown/vendor/**",
   ]),
   {
     files: ["components/ui/**/*.{ts,tsx}", "hooks/use-mobile.ts"],

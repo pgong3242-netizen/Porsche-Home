@@ -1,11 +1,12 @@
 import type { Group, Vector3 } from 'three';
 import type { CarPart } from './car-geometry';
-import { loadRsrAssembly, rsrChapters, rsrChapterTimes } from './rsr-assembly';
+import { rsrChapters, rsrChapterTimes } from './rsr-chapters';
 
 type PartInfo = Record<string, { name: string; copy: string }>;
 export type WorkshopExhibit = {
   group: Group;
   parts: CarPart[];
+  syncOwned?: (owned: readonly string[], delta: number) => void;
   assemble?: (progress: number) => void;
   focus?: (progress: number) => { target: Vector3; cameraOffset: Vector3 } | null;
 };
@@ -16,37 +17,28 @@ type WorkshopModel = {
   disclosure: string;
   duration: number;
   parts: PartInfo;
-  create?: () => WorkshopExhibit | Promise<WorkshopExhibit>;
+  create?: (signal?: AbortSignal) => WorkshopExhibit | Promise<WorkshopExhibit>;
+  prefetch?: () => Promise<unknown>;
   chapters?: readonly { key: string; label: string; progress: number; jump: number }[];
   instructions?: string;
 };
 
 export const workshopModels: readonly WorkshopModel[] = [
   {
-    id: 'carrera-4s',
-    name: '911 Carrera 4S',
-    disclosure: '911 外观模型 · 内部机械为结构示意',
-    duration: 14000,
-    chapters: [
-      { key: 'powertrain', label: '动力与底盘', progress: 0, jump: .18 },
-      { key: 'wheels', label: '轮组就位', progress: .3, jump: .45 },
-      { key: 'body', label: '车身合拢', progress: .6, jump: .75 },
-      { key: 'glass', label: '整车完成', progress: .85, jump: 1 },
-    ],
-    parts: {
-      body: { name: '车身外壳', copy: '车身外壳缓缓落在底盘上。' },
-      glass: { name: '玻璃与座舱', copy: '玻璃与座舱最后归位，完成整车。' },
-      wheels: { name: '车轮组件', copy: '四个轮组沿轴线安装到悬架上。' },
-      chassis: { name: '底盘平台', copy: '底盘承托动力组件、悬架和车轮。' },
-      powertrain: { name: '动力组件', copy: '从缸体、活塞和传动组件开始组装。' },
-    },
+    id: 'gt3-rs',
+    name: '911 GT3 RS',
+    disclosure: 'GT3 RS · 模型：blenderbett / CC BY 4.0',
+    duration: 0,
+    parts: {},
+    create: signal => import('./gt3-rs').then(module => module.loadGt3Rs(signal)),
+    prefetch: () => import('./gt3-rs').then(module => module.prefetchGt3Rs()),
   },
   {
     id: 'technic-42096',
     name: 'Technic 42096 · 911 RSR',
     disclosure: '分步拼装 · LDraw 模型：Philippe Hurbain',
     duration: 51000,
-    create: loadRsrAssembly,
+    create: signal => import('./rsr-assembly').then(module => module.loadRsrAssembly(signal)),
     instructions: 'https://www.lego.com/en-us/service/building-instructions/42096',
     chapters: rsrChapters.map(({ key, label }, index) => ({ key, label, progress: rsrChapterTimes[index], jump: rsrChapterTimes[index] + rsrChapters[index].weight * (key === 'powertrain' ? .60 : .75) })),
     parts: {

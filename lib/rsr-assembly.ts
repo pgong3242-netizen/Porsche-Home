@@ -3,18 +3,26 @@ import { DecalGeometry } from 'three/addons/geometries/DecalGeometry.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import type { WorkshopExhibit } from './workshop-catalog';
 
-export const rsrChapters = [
-  { key: 'chassis', label: '后桥与差速器', from: 0, to: 10, weight: .14 },
-  { key: 'front', label: '前桥与悬架', from: 10, to: 31, weight: .23 },
-  { key: 'powertrain', label: '六缸发动机', from: 31, to: 32, weight: .23 },
-  { key: 'cabin', label: '座舱与骨架', from: 32, to: 61, weight: .16 },
-  { key: 'body', label: '车身与灯组', from: 61, to: 103, weight: .15 },
-  { key: 'finish', label: '尾翼与轮组', from: 103, to: Infinity, weight: .09 },
-];
+import { rsrChapters, rsrChapterTimes } from './rsr-chapters';
+import { disposeSceneObject, yieldToBrowser } from './scene-loading';
 
-export const rsrChapterTimes = rsrChapters.map((_, i) =>
-  rsrChapters.slice(0, i).reduce((sum, chapter) => sum + chapter.weight, 0),
-);
+// This static model repeats materials per part; parts animate transforms, not materials.
+export function reuseRsrMaterials(json: {
+  materials: Record<string, unknown>[];
+  meshes: { primitives: { material?: number }[] }[];
+}) {
+  const unique = new Map<string, number>();
+  const indices = json.materials.map((material, index) => {
+    const properties = { ...material };
+    delete properties.name;
+    const key = JSON.stringify(properties);
+    if (!unique.has(key)) unique.set(key, index);
+    return unique.get(key)!;
+  });
+  for (const mesh of json.meshes) for (const primitive of mesh.primitives) {
+    if (primitive.material !== undefined) primitive.material = indices[primitive.material];
+  }
+}
 
 function addRaceNumbers(group: THREE.Group) {
   const canvas = document.createElement('canvas');
@@ -48,11 +56,26 @@ function addRaceNumbers(group: THREE.Group) {
   }
 }
 
-export async function loadRsrAssembly(): Promise<WorkshopExhibit> {
-  const response = await fetch('/models/42096-rsr.glb.gz');
+export async function readRsrBytes(response: Response): Promise<ArrayBuffer> {
   if (!response.ok || !response.body) throw new Error('RSR model download failed');
-  const stream = response.body.pipeThrough(new DecompressionStream('gzip'));
-  const gltf = await new GLTFLoader().parseAsync(await new Response(stream).arrayBuffer(), '');
+  const bytes = await response.arrayBuffer();
+  const header = new Uint8Array(bytes, 0, Math.min(2, bytes.byteLength));
+  // Hosts with Content-Encoding: gzip have already been decoded by fetch.
+  if (header[0] !== 0x1f || header[1] !== 0x8b) return bytes;
+  return new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+}
+
+export async function loadRsrAssembly(signal?: AbortSignal): Promise<WorkshopExhibit> {
+  const bytes = await readRsrBytes(await fetch('./models/42096-rsr.bin', { signal }));
+  await yieldToBrowser();
+  signal?.throwIfAborted();
+  const loader = new GLTFLoader().register(parser => ({
+    name: 'RSR_shared_materials',
+    beforeRoot() { reuseRsrMaterials(parser.json);return null; },
+  }));
+  const gltf = await loader.parseAsync(bytes, '');
+  if (signal?.aborted) { disposeSceneObject(gltf.scene);signal.throwIfAborted(); }
+  await yieldToBrowser();
   const group = gltf.scene.children[0] as THREE.Group;
   addRaceNumbers(group);
   const stages = rsrChapters.map(() => [] as THREE.Object3D[]);
@@ -64,6 +87,7 @@ export async function loadRsrAssembly(): Promise<WorkshopExhibit> {
     node.traverse(mesh => {
       if (mesh instanceof THREE.Mesh) mesh.receiveShadow = true;
     });
+    if (stages[chapter].length % 12 === 0) await yieldToBrowser();
   }
 
   const detailTargets = stages.slice(0, 3).map(nodes => {

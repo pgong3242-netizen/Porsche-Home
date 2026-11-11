@@ -28,7 +28,7 @@ export function addWorldDetails(world:THREE.Group,home:THREE.Group) {
   for(let i=0;i<3;i++)box(world,cream,.7,.025,.025,22.1,.7+i*.15,-9.385);
   for(const x of[21.7,22.5])for(const z of[-9.9,-9.5]){const wheel=add(new THREE.CylinderGeometry(.09,.09,.05,12),dark,world,x,.43,z);wheel.rotation.z=Math.PI/2;}
   // A sweeping private driveway: painted curbs and dashed lane markings.
-  const curve=new THREE.CatmullRomCurve3([[26,-18],[35,-14],[38,-3],[33,13],[20,24],[8,26],[6,31],[6,41]].map(([x,z])=>new THREE.Vector3(x,.054,z)));
+  const curve=new THREE.CatmullRomCurve3([[26,-18],[35,-14],[38,-3],[33,13],[20,24],[8,26],[6,31],[6,37]].map(([x,z])=>new THREE.Vector3(x,.054,z)));
   const positions:number[]=[],indices:number[]=[];const width=2.65;
   for(let i=0;i<=90;i++){const t=i/90,p=curve.getPoint(t),d=curve.getTangent(t),n=new THREE.Vector3(-d.z,0,d.x).multiplyScalar(width/2);positions.push(p.x+n.x,p.y,p.z+n.z,p.x-n.x,p.y,p.z-n.z);if(i<90){const k=i*2;indices.push(k,k+2,k+1,k+1,k+2,k+3);}}
   const roadGeometry=new THREE.BufferGeometry();roadGeometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));roadGeometry.setIndex(indices);roadGeometry.computeVertexNormals();
@@ -71,27 +71,29 @@ export function addWorldDetails(world:THREE.Group,home:THREE.Group) {
   for(let i=0;i<3;i++){const card=box(world,i===1?red:cream,.28,.012,.18,-21.6+i*.28,1.4,17.05);card.rotation.y=i*.4;}
   // Direction signs create discoveries at the path junctions.
   for(const[x,z,text]of[[-13,9,'HOME / FRIENDS'],[13,-4,'ATELIER / 911'],[-13,-12,'MEMORIES / HOME']] as [number,number,string][]){box(world,wood,.07,1.45,.07,x,.75,z);graphic(text,'FOLLOW YOUR CURIOSITY',1.95,.73,x,1.75,z,world,.18,'light');}
+  const entrance = new THREE.Group();
+  entrance.name = 'garden-entrance';
+  world.add(entrance);
   // The first arrival is at a real garden gate, with sliding leaves and a clear approach.
-  box(world,stone,12,.09,2.1,6,0,30);
+  box(entrance,stone,12,.09,2.1,6,0,30);
   for(const x of[.8,11.2]){
-    box(world,stone,1.05,3.35,1.05,x,1.68,30);box(world,cream,1.2,.16,1.2,x,3.43,30);
-    box(world,dark,.2,1.2,.06,x,2.18,30.56);box(world,glow,.035,1.02,.025,x,2.2,30.602);
+    box(entrance,stone,1.05,3.35,1.05,x,1.68,30);box(entrance,cream,1.2,.16,1.2,x,3.43,30);
+    box(entrance,dark,.2,1.2,.06,x,2.18,30.56);box(entrance,glow,.035,1.02,.025,x,2.2,30.602);
   }
-  box(world,dark,11.5,.58,.7,6,4.08,30);box(world,red,10.6,.035,.04,6,3.77,30.38);
-  graphic('PORSCHE HOME','YOUR PRIVATE WORLD',7.7,.83,6,4.15,30.37,world);
-  graphic('911','HOME',.72,.66,11.2,1.27,30.545,world,0,'light');
+  box(entrance,dark,11.5,.58,.7,6,4.08,30);box(entrance,red,10.6,.035,.04,6,3.77,30.38);
+  graphic('七只烧鸡','YOUR PRIVATE WORLD',7.7,.83,6,4.15,30.37,entrance);
+  graphic('911','HOME',.72,.66,11.2,1.27,30.545,entrance,0,'light');
   const gateLeaves=[new THREE.Group(),new THREE.Group()];
-  gateLeaves.forEach((gate,i)=>{gate.position.set(i?8.5:3.5,0,30);world.add(gate);box(gate,dark,4.8,.13,.13,0,.31,0);box(gate,dark,4.8,.12,.13,0,2.66,0);for(let j=0;j<17;j++)box(gate,dark,.055,2.33,.07,-2.23+j*.279,1.49,0);box(gate,red,.045,2.27,.085,i?-2.33:2.33,1.49,.015);});
-  for(const x of[-1.2,13.2]){add(new THREE.CylinderGeometry(.48,.36,.67,16),stone,world,x,.37,31.25);const shrub=add(new THREE.IcosahedronGeometry(.65,1),leaf,world,x,1.05,31.25);shrub.scale.y=.9;}
+  gateLeaves.forEach((gate,i)=>{gate.position.set(i?8.5:3.5,0,30);entrance.add(gate);box(gate,dark,4.8,.13,.13,0,.31,0);box(gate,dark,4.8,.12,.13,0,2.66,0);for(let j=0;j<17;j++)box(gate,dark,.055,2.33,.07,-2.23+j*.279,1.49,0);box(gate,red,.045,2.27,.085,i?-2.33:2.33,1.49,.015);});
+  for(const x of[-1.2,13.2]){add(new THREE.CylinderGeometry(.48,.36,.67,16),stone,entrance,x,.37,31.25);const shrub=add(new THREE.IcosahedronGeometry(.65,1),leaf,entrance,x,1.05,31.25);shrub.scale.y=.9;}
 
   // Small destinations in the outer landscape keep the central garden open.
   for (const [x,z,title,subtitle] of [
-    [-39,-8,'PORSCHE','HERITAGE GARDEN'],
-    [42,15,'E-PERFORMANCE','CHARGING LOUNGE'],
-    [-10,-35,'911','DESIGN IN MOTION'],
-    [-37,30,'PORSCHE CLUB','MEET / DRIVE / SHARE'],
+    [-35,-8,'PORSCHE','HERITAGE GARDEN'],
+    [35,15,'E-PERFORMANCE','CHARGING LOUNGE'],
   ] as [number,number,string,string][]) {
     const pocket = new THREE.Group();
+    pocket.name = 'garden-rest-area';
     pocket.position.set(x,0,z);
     world.add(pocket);
     add(new THREE.CylinderGeometry(4.5,4.7,.18,36),cream,pocket,0,.08,0);
@@ -119,18 +121,16 @@ export function addWorldDetails(world:THREE.Group,home:THREE.Group) {
       add(new THREE.TubeGeometry(sculpture,40,.055,6,false),red,pocket,0,0,0);
     }
   }
-  for (let i=0;i<34;i++) {
-    const a=i*Math.PI*2/34;
-    const x=Math.cos(a)*48,z=Math.sin(a)*43;
-    const trunk=add(new THREE.CylinderGeometry(.11,.17,1.5,6),wood,world,x,.7,z);
-    trunk.castShadow=false;
-    const crown=add(new THREE.IcosahedronGeometry(1.5+(i%3)*.3,1),leaf,world,x,2.3,z);
-    crown.scale.y=1.4;
-    for (let n=0;n<4;n++) {
-      const flower=add(new THREE.IcosahedronGeometry(.24,0),n%2?cream:red,world,x+Math.sin(n*2+i)*1.8,.24,z+Math.cos(n*2+i)*1.8);
-      flower.castShadow=false;
-    }
-  }
+  const trees = new THREE.Group();trees.name='courtyard-trees';world.add(trees);
+  const treePositions=[[-32,-20],[-28,-25],[-15,-22],[14,-24],[30,-23],[39,-4],[34,25],[15,24],[-20,29],[-34,16]];
+  const trunks=new THREE.InstancedMesh(new THREE.CylinderGeometry(.12,.18,1.8,6),wood,treePositions.length);
+  const crowns=new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1.15,1),leaf,treePositions.length);
+  const treeMatrix=new THREE.Object3D();
+  treePositions.forEach(([x,z],i)=>{
+    treeMatrix.position.set(x,.9,z);treeMatrix.scale.set(1,1,1);treeMatrix.updateMatrix();trunks.setMatrixAt(i,treeMatrix.matrix);
+    treeMatrix.position.y=2.4;treeMatrix.scale.set(1,1.3,1);treeMatrix.updateMatrix();crowns.setMatrixAt(i,treeMatrix.matrix);
+  });
+  crowns.castShadow=true;trees.add(trunks,crowns);
 
   // Vector outline from the Porsche Design System wordmark (4500 × 300).
   const wordmarkOutline = new Path2D('M502 221c48.1 0 74-25.9 74-74V74c0-48.1-25.9-74-74-74H0v300h68v-79h434zm6-143v65c0 7.8-4.2 12-12 12H68V66h428c7.8 0 12 4.2 12 12zm228 222c-48.1 0-74-25.9-74-74V74c0-48.1 25.9-74 74-74h417c48.1 0 74 25.9 74 74v152c0 48.1-25.9 74-74 74H736zm411-66c7.8 0 12-4.2 12-12V78c0-7.8-4.2-12-12-12H742c-7.8 0-12 4.2-12 12v144c0 7.8 4.2 12 12 12h405zm675-36c39.844 16.757 67.853 56.1 68 102h-68c0-54-25-79-79-79h-361v79h-68V0h502c48.1 0 74 25.9 74 74v50.14c0 46.06-23.75 71.76-68 73.86zm-12-43c7.8 0 12-4.2 12-12V78c0-7.8-4.2-12-12-12h-428v89h428zm162-81c0-48.1 25.9-74 74-74h492v56h-486c-7.8 0-12 4.2-12 12v42c0 7.8 4.2 12 12 12h422c48.1 0 74 25.9 74 74v30c0 48.1-25.9 74-74 74h-492v-56h486c7.8 0 12-4.2 12-12v-42c0-7.8-4.2-12-12-12h-422c-48.1 0-74-25.9-74-74V74zm661 0c0-48.1 25.9-74 74-74h480v66h-474c-7.8 0-12 4.2-12 12v144c0 7.8 4.2 12 12 12h474v66h-480c-48.1 0-74-25.9-74-74V74zM3817 0v300h-68V183h-407v117h-68V0h68v117h407V0h68zm156 56v66h527v56h-527v66h527v56h-595V0h595v56h-527z');
@@ -155,13 +155,16 @@ export function addWorldDetails(world:THREE.Group,home:THREE.Group) {
   }
 
   const campuses = new Map<string,THREE.Group>();
-  for (const key of ['porsche-china','porsche-rd']) {
+  function buildCampus(key:string) {
     const campus=new THREE.Group();
     home.add(campus);
-    campus.visible=false;
+    campus.name=key;
     campuses.set(key,campus);
     const research=key==='porsche-rd';
-    box(campus,stone,17,.2,12,-2,.2,-3);
+    if(research) {
+      box(campus,stone,8,.2,12,-15,.2,-7);
+      box(campus,stone,10.5,.2,12,1.5,.2,-3);
+    } else box(campus,stone,17,.2,12,-2,.2,-3);
     const silver = mat('#b8c3ca',.42,.35);
     const mullion = mat('#53616d',.48,.3);
     const blueGlass = mat('#6d91a6',.19,.42);
@@ -181,10 +184,21 @@ export function addWorldDetails(world:THREE.Group,home:THREE.Group) {
       box(campus,silver,w+.16,.16,d+.16,x,height+.38,z);
     }
     if (research) {
-      // Reference composition: glass office tower behind a silver-clad low laboratory.
-      tower(-6,-6.8,5.4,5.1,11.8);
-      facadeWordmark(campus,4.25,-6,11.34,-4.11);
-      tower(-2.1,-8,2.2,4.1,10.6);
+      const asphalt=mat('#44484c',.95),curb=mat('#aeb3b6');
+      const street=new THREE.Group();street.name='porsche-street';campus.add(street);
+      box(street,asphalt,6,.06,60,-7.5,.02,-12);
+      for(const x of [-10.7,-4.3]) {
+        box(street,curb,.3,.22,60,x,.11,-12);
+        box(street,cream,.1,.015,60,x+(x<-7.5?.4:-.4),.06,-12);
+      }
+      for(let z=-40;z<=15;z+=5)box(street,cream,.12,.015,2.5,-7.5,.06,z);
+      for(let x=-10;x<=-5;x+=.8)box(street,cream,.4,.015,3.2,x,.065,-16);
+      const streetName=graphic('PORSCHE','STREET / JIANGQIAO',9,1.8,-9,.07,7,street,0,'dark');
+      streetName.rotation.set(-Math.PI/2,0,Math.PI/2);
+      // Separate office and laboratory foundations leave a clear north–south street.
+      tower(-16,-6.8,5.4,5.1,11.8);
+      facadeWordmark(campus,4.25,-16,11.34,-4.11);
+      tower(-12.1,-8,2.2,4.1,10.6);
       box(campus,mullion,8.5,1.5,10.6,1.5,1,-3.5);
       box(campus,silver,8.5,3.3,10.6,1.5,3.4,-3.5);
       // Horizontal cladding seams on the front and long side.
@@ -210,8 +224,18 @@ export function addWorldDetails(world:THREE.Group,home:THREE.Group) {
       box(campus,dark,3.5,1.4,.12,-.25,1,1.85);
       box(campus,dark,4.4,.16,1.2,-.25,1.79,2.25);
       facadeWordmark(campus,3.55,-.5,4.23,1.865);
-      for(let x=-8;x<-3;x+=.32) box(campus,mullion,.22,1.2,.15,x,.85,2.1);
-      graphic('JIANGQIAO','RESEARCH & DEVELOPMENT',2.3,.75,-6,1.65,2.22,campus,0,'light');
+      graphic('JIANGQIAO','RESEARCH & DEVELOPMENT',2.3,.75,-1,1.65,2.22,campus,0,'light');
+      const offices=new THREE.Group(),laboratory=new THREE.Group();
+      offices.name='research-offices';laboratory.name='research-laboratory';
+      for(const node of [...campus.children]) {
+        if(node===street)continue;
+        (node.position.x<-7.5?offices:laboratory).add(node);
+      }
+      for(const building of [offices,laboratory]) {
+        // Lengthen toward the rear so the forecourt and parking remain clear.
+        const front=new THREE.Box3().setFromObject(building).max.z;
+        building.scale.z=3;building.position.z=-2*front;campus.add(building);
+      }
     } else {
       // Lujiazui headquarters is represented as offices within an urban tower.
       tower(-2,-5,7,6,16.2);
@@ -229,16 +253,24 @@ export function addWorldDetails(world:THREE.Group,home:THREE.Group) {
       box(campus,mullion,.65,2.2,.3,5.6,1.35,2.8);
       graphic('T3','OFFICES',.59,.72,5.6,1.9,2.97,campus,0,'light');
     }
-    for(const x of [-7,5]) {
+    if(!research) for(const x of [-7,5]) {
       box(campus,wood,2,.16,.65,x,.7,4);
       add(new THREE.CylinderGeometry(.6,.5,.7,12),stone,campus,x,.5,1.7);
       add(new THREE.IcosahedronGeometry(.85,1),leaf,campus,x,1.4,1.7);
     }
+    if (research) {
+      // The front apron clears the entrance, benches, pool and charging posts.
+      box(campus,stone,10.5,.18,7.4,1.25,.25,11.8);
+      for (const x of [-2,2]) {
+        for (const side of [-1,1]) box(campus,cream,.045,.012,5.4,x+side*1.35,.346,12.1);
+        box(campus,cream,2.7,.012,.045,x,.346,9.4);
+      }
+    }
     if(research) for(let n=0;n<3;n++) {
-      box(campus,cream,.45,1.35,.4,-6+n*1.5,.8,5.5);
-      box(campus,dark,.3,.4,.04,-6+n*1.5,1,5.73);
-      box(campus,red,1.1,.025,2,-6+n*1.5,.32,7);
+      box(campus,cream,.45,1.35,.4,-1+n*1.5,.8,5.5);
+      box(campus,dark,.3,.4,.04,-1+n*1.5,1,5.73);
+      box(campus,red,1.1,.025,2,-1+n*1.5,.32,7);
     }
   }
-  return {setCampus:(key?:string)=>{campuses.forEach((campus,id)=>{campus.visible=id===key;});},setGateOpen:(value:number)=>{gateLeaves[0].position.x=3.5-value*4.4;gateLeaves[1].position.x=8.5+value*4.4;},dispose:()=>textures.forEach(t=>t.dispose())};
+  return {setCampus:(key?:string)=>{entrance.visible=key!=='porsche-rd';if(key && ['porsche-china','porsche-rd'].includes(key) && !campuses.has(key))buildCampus(key);campuses.forEach((campus,id)=>{campus.visible=id===key;});},setGateOpen:(value:number)=>{gateLeaves[0].position.x=3.5-value*4.4;gateLeaves[1].position.x=8.5+value*4.4;},dispose:()=>textures.forEach(t=>t.dispose())};
 }

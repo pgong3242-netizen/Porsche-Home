@@ -93,5 +93,6 @@ for (const [i, step] of model.children.entries()) {
   assembly.add(module);
 }
 const result = await new GLTFExporter().parseAsync(assembly, { binary: true });
-await writeFile(new URL('../public/models/42096-rsr.glb.gz', import.meta.url), gzipSync(Buffer.from(result), {level: 6}));
+// .gz is reserved for negotiated HTTP variants by the production static server.
+await writeFile(new URL('../public/models/42096-rsr.bin', import.meta.url), gzipSync(Buffer.from(result), {level: 6}));
 console.log(`Exported ${chunks.length} groups; uncompressed ${Math.round(result.byteLength / 1e6)} MB`);

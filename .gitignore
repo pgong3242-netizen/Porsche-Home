@@ -50,3 +50,11 @@ yarn-error.log*
 
 # OS metadata
 .DS_Store
+.gstack/
+*:Zone.Identifier
+
+# Local agent plans/state
+/.hermes/
+
+# GT3 RS is shipped losslessly compressed; keep the downloaded source local.
+/public/models/porsche-911-gt3-rs.glb

@@ -43,7 +43,9 @@ export function PhoneEntry({ initialUrl }: { initialUrl: string }) {
   </div>;
 }
 
-export function FriendsPanel({ friends, current, onToggle }: { friends: Friend[]; current: Friend | null; onToggle: (friend: Friend) => void }) {
+export function FriendsPanel({ friends: allFriends, current: activeFriend, onToggle }: { friends: Friend[]; current: Friend | null; onToggle: (friend: Friend) => void }) {
+  const friends = allFriends.filter(friend => (friend.key === 'porsche-rd' || friend.key === 'munich'));
+  const current = activeFriend && (activeFriend.key === 'porsche-rd' || activeFriend.key === 'munich') ? activeFriend : null;
   return <div className="prototype-content">
     {current && <button className="primary-button" onClick={() => onToggle(current)}>
       {friends.some(friend => friend.key === current.key) ? '从好友列表移除这座家' : '把这座家加入好友列表'}
@@ -52,7 +54,7 @@ export function FriendsPanel({ friends, current, onToggle }: { friends: Friend[]
     {friends.length ? <div className="prototype-list">{friends.map(friend => <FriendRow key={friend.key} friend={friend} saved onToggle={onToggle} />)}</div> : <p className="modal-copy">先去朋友家做客，再把它加进列表。收藏保存在当前浏览器。</p>}
     <h3><Globe2 size={16} /> 车友与品牌园区</h3>
     <p className="fine-print">拜访车友庭院，也可以探索保时捷办公与研发园区概念场景。</p>
-    <div className="prototype-list">{sampleFriends.map(friend => <FriendRow key={friend.key} friend={friend} saved={friends.some(item => item.key === friend.key)} onToggle={onToggle} />)}</div>
+    <div className="prototype-list">{sampleFriends.filter(friend => (friend.key === 'porsche-rd' || friend.key === 'munich')).map(friend => <FriendRow key={friend.key} friend={friend} saved={friends.some(item => item.key === friend.key)} onToggle={onToggle} />)}</div>
   </div>;
 }
 

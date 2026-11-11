@@ -1,52 +1,88 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { HomeConfig } from '../lib/home-config';
 import { workshopModels, type WorkshopExhibit } from '../lib/workshop-catalog';
-import { createMechanicalAssembly } from '../lib/mechanical-assembly';
+import type { createMechanicalAssembly } from '../lib/mechanical-assembly';
 import { createConceptCar } from '../lib/car-geometry';
-import { loadDisplayCar, type DisplayCar } from '../lib/import-car';
+import { createPartModules, type PartModules } from '../lib/part-modules';
+import type { DisplayCar } from '../lib/import-car';
+import { mergeStaticMeshes } from '../lib/static-scene';
+import { disposeSceneObject, prepareSceneObject, yieldToBrowser } from '../lib/scene-loading';
 import { addWorldDetails } from '../lib/world-details';
 import type { PetKind } from '../lib/demo-world';
 import { makeGardenPet } from '../lib/garden-pet';
+import { createResearchParking, disposeResearchParking } from '../lib/research-parking';
 
 export type ScenePlace = 'entry'|'map'|'home'|'workshop'|'memories'|'terrace';
-type Props = {config:HomeConfig; view:ScenePlace; workshopModelId?:string; campus?:string; explode:number; pet?:PetKind; active?:boolean; onReady?:()=>void; onExhibitStatus?:(status:'loading'|'ready'|'error')=>void; onPartSelect?:(part:string)=>void; onPlaceSelect?:(place:ScenePlace)=>void; onLoadingProgress?:(value:number,stage:string)=>void};
-type Runtime = {setConfig:(config:HomeConfig)=>void; setView:(view:Props['view'])=>void; setExplode:(n:number)=>void};
+type Props = {config:HomeConfig; view:ScenePlace; workshopModelId?:string; campus?:string; explode:number; ownedParts?:readonly string[]; pet?:PetKind; active?:boolean; onReady?:()=>void; onExhibitStatus?:(status:'loading'|'ready'|'error')=>void; onPartSelect?:(part:string)=>void; onPlaceSelect?:(place:ScenePlace)=>void; onLoadingProgress?:(value:number,stage:string)=>void};
+type Runtime = {refresh:()=>void; retryExhibit:()=>void; setConfig:(config:HomeConfig)=>void; setView:(view:Props['view'])=>void; setExplode:(n:number)=>void};
 const DESTINATIONS: {id:Exclude<ScenePlace,'map'|'entry'>;name:string;subtitle:string;position:[number,number,number]}[] = [
   {id:'home',name:'庭院之家',subtitle:'YOUR HOME',position:[-2,6,-4]},
-  {id:'workshop',name:'工程工坊',subtitle:'THE WORKSHOP',position:[26,5.8,-7]},
-  {id:'memories',name:'记忆展亭',subtitle:'MEMORY PAVILION',position:[-22,5.4,-16]},
-  {id:'terrace',name:'来客露台',subtitle:'GUEST TERRACE',position:[-21,4.2,18]},
+  {id:'workshop',name:'车库',subtitle:'THE GARAGE',position:[26,5.8,-7]},
 ];
 
-export default function GardenScene({config,view,workshopModelId,campus,explode,pet='none',active=true,onReady,onExhibitStatus,onPartSelect,onPlaceSelect,onLoadingProgress}:Props) {
+export default function GardenScene({config,view,workshopModelId,campus,explode,ownedParts,pet='none',active=true,onReady,onExhibitStatus,onPartSelect,onPlaceSelect,onLoadingProgress}:Props) {
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [exhibitState,setExhibitState] = useState<'loading'|'ready'|'error'>('ready');
   const host=useRef<HTMLDivElement>(null), runtime=useRef<Runtime|null>(null);
   const hotspots=useRef<Record<string,HTMLButtonElement|null>>({});
-  const latest=useRef({config,view,workshopModelId,campus,explode,pet,active,onReady,onExhibitStatus,onPartSelect,onPlaceSelect,onLoadingProgress}); latest.current={config,view,workshopModelId,campus,explode,pet,active,onReady,onExhibitStatus,onPartSelect,onPlaceSelect,onLoadingProgress};
+  const latest=useRef({config,view,workshopModelId,campus,explode,ownedParts,pet,active,onReady,onExhibitStatus,onPartSelect,onPlaceSelect,onLoadingProgress});
+  useEffect(()=>{latest.current={config,view,workshopModelId,campus,explode,ownedParts,pet,active,onReady,onExhibitStatus,onPartSelect,onPlaceSelect,onLoadingProgress};});
   useEffect(()=>{
     if(!host.current)return;
     const container=host.current;
+    let stopped=false,frame=0;
+    const cleanups: (() => void)[] = [];
+    const preparations = new Set<Promise<boolean>>();
+    const downloads = new AbortController();
+    const cleanup = () => {
+      stopped=true;
+      downloads.abort();
+      cancelAnimationFrame(frame);
+      runtime.current=null;
+      const releases=cleanups.splice(0).reverse();
+      // Three.js polls shader programs during compileAsync; keep them alive until it settles.
+      void Promise.allSettled([...preparations]).then(()=>{for(const dispose of releases)dispose();});
+    };
+    async function initialize() {
+    await yieldToBrowser();
+    if(stopped)return;
     latest.current.onLoadingProgress?.(8,'正在铺开山野与道路');
     let renderer:THREE.WebGLRenderer;
-    try{renderer=new THREE.WebGLRenderer({antialias:true,alpha:false,powerPreference:'high-performance'});}catch{container.dataset.webgl='unavailable';latest.current.onLoadingProgress?.(100,'基础布置已就绪');latest.current.onReady?.();return;}
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio,1.8)); renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFShadowMap;
+    try{renderer=new THREE.WebGLRenderer({antialias:true,alpha:false,powerPreference:'high-performance'});}catch{throw new Error('WebGL unavailable');}
+    cleanups.push(()=>{renderer.dispose();renderer.domElement.remove();});
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio,1.4)); renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFShadowMap;
     renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.02;renderer.outputColorSpace=THREE.SRGBColorSpace;
     renderer.domElement.style.cssText='display:block;width:100%;height:100%;touch-action:none';container.appendChild(renderer.domElement);
+    let dirty=true,redrawUntil=0;
+    const refresh=()=>{dirty=true;redrawUntil=performance.now()+1800;};
     const scene=new THREE.Scene();scene.background=new THREE.Color('#c1c5b7');scene.fog=new THREE.Fog('#c1c5b7',44,115);
+    cleanups.push(()=>disposeSceneObject(scene));
     const pmrem=new THREE.PMREMGenerator(renderer),roomEnvironment=new RoomEnvironment();
     const environment=pmrem.fromScene(roomEnvironment,.04);scene.environment=environment.texture;scene.environmentIntensity=.42;roomEnvironment.dispose();pmrem.dispose();
+    cleanups.push(()=>environment.dispose());
     const camera=new THREE.PerspectiveCamera(38,1,.1,500);camera.position.set(21,16,25);
     const controls=new OrbitControls(camera,renderer.domElement);controls.target.set(0,1.1,0);controls.enableDamping=true;controls.dampingFactor=.055;controls.minDistance=6;controls.maxDistance=240;controls.maxPolarAngle=Math.PI*.48;controls.minPolarAngle=.18;controls.enablePan=true;controls.screenSpacePanning=false;controls.panSpeed=.7;
+    controls.addEventListener('change',()=>{dirty=true;});
+    cleanups.push(()=>controls.dispose());
+    const prepare = (root:THREE.Object3D) => {
+      const task=prepareSceneObject(renderer,root,camera,scene,()=>stopped);
+      preparations.add(task);
+      void task.then(()=>preparations.delete(task),()=>preparations.delete(task));
+      return task;
+    };
     const ambient=new THREE.HemisphereLight('#e5e6d7','#596344',1.15);scene.add(ambient);
     const sunlight=new THREE.DirectionalLight('#fff1cd',3.35);sunlight.position.set(-13,24,9);sunlight.castShadow=true;sunlight.shadow.mapSize.set(2048,2048);sunlight.shadow.camera.left=-50;sunlight.shadow.camera.right=50;sunlight.shadow.camera.top=50;sunlight.shadow.camera.bottom=-50;sunlight.shadow.normalBias=.04;sunlight.shadow.bias=-.00015;scene.add(sunlight);
+    cleanups.push(()=>sunlight.shadow.map?.dispose());
     const fill=new THREE.DirectionalLight('#b9d2d7',.45);fill.position.set(12,9,-10);scene.add(fill);
     const materials:THREE.Material[]=[];
     const standard=(color:string,roughness=.85,metalness=0)=>{const mat=new THREE.MeshStandardMaterial({color,roughness,metalness});materials.push(mat);return mat;};
-    const stone=standard('#b9ad95'),edgeStone=standard('#a69c83'),concrete=standard('#c8c0ae'),wood=standard('#725b43'),woodLight=standard('#ac9570'),dark=standard('#373b32'),soil=standard('#6b6753'),grass=standard('#788363'),leaf=standard('#465f3e'),leafLight=standard('#677b4e'),brass=standard('#88784b',.4,.7);
+    const stone=standard('#b9ad95'),edgeStone=standard('#a69c83'),concrete=standard('#c8c0ae'),wood=standard('#725b43'),woodLight=standard('#ac9570'),dark=standard('#373b32'),grass=standard('#788363'),leaf=standard('#465f3e'),leafLight=standard('#677b4e'),brass=standard('#88784b',.4,.7);
     const glass=new THREE.MeshPhysicalMaterial({color:'#7c9690',roughness:.1,metalness:.12,transparent:true,opacity:.34,side:THREE.DoubleSide});materials.push(glass);
     const warmGlow=new THREE.MeshStandardMaterial({color:'#f5d9a0',emissive:'#ffd78d',emissiveIntensity:1.2,roughness:.7});materials.push(warmGlow);
     const water=new THREE.MeshPhysicalMaterial({color:'#6a9b96',roughness:.19,metalness:.25,transparent:true,opacity:.87,clearcoat:1});materials.push(water);
@@ -55,19 +91,51 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
     function box(parent:THREE.Object3D,material:THREE.Material,w:number,h:number,d:number,x=0,y=0,z=0){return mesh(new THREE.BoxGeometry(w,h,d),material,parent,x,y,z);}
     function cylinder(parent:THREE.Object3D,material:THREE.Material,r:number,h:number,x=0,y=0,z=0,segments=12){return mesh(new THREE.CylinderGeometry(r,r,h,segments),material,parent,x,y,z);}
     function sphere(parent:THREE.Object3D,material:THREE.Material,r:number,x=0,y=0,z=0,sx=1,sy=1,sz=1){const m=mesh(new THREE.IcosahedronGeometry(r,1),material,parent,x,y,z);m.scale.set(sx,sy,sz);return m;}
-    function line(parent:THREE.Object3D,material:THREE.Material,a:THREE.Vector3,b:THREE.Vector3,r=.05){const v=b.clone().sub(a);const m=cylinder(parent,material,r,v.length());m.position.copy(a).add(b).multiplyScalar(.5);m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),v.normalize());return m;}
     let seed=83;function rand(){seed=(seed*16807)%2147483647;return(seed-1)/2147483646;}
     const terrain=new THREE.Group();scene.add(terrain);
+    const island=new THREE.Group();scene.add(island);
+    const world=new THREE.Group();scene.add(world);
+    const architecture=new THREE.Group();island.add(architecture);
+    const buildings:Record<HomeConfig['architecture'],THREE.Group>={courtyard:new THREE.Group(),pavilion:new THREE.Group(),alpine:new THREE.Group()};
+    const carport=new THREE.Group();carport.position.set(3.15,0,.25);island.add(carport);
+    function glow(parent:THREE.Object3D,x:number,y:number,z:number,intensity=5){const p=new THREE.PointLight('#ffdca3',intensity,7,2);p.position.set(x,y,z);parent.add(p);allFixtures.push(p);return p;}
+    // A freestanding workshop: the open forecourt keeps all exploded parts in view.
+    const workshop=new THREE.Group();workshop.position.set(26,0,-6);world.add(workshop);
+    box(workshop,edgeStone,14,.24,16,0,.06,0);box(workshop,stone,13.6,.1,15.6,0,.23,0);
+    box(workshop,concrete,12,4.1,.25,0,2.35,-5.8);box(workshop,wood,12.6,.22,4.6,0,4.58,-4.15);
+    box(workshop,dark,.16,4.3,4.7,-5.9,2.4,-4.15);box(workshop,glass,.06,4.1,5.3,5.9,2.35,-3.35);
+    for(let i=0;i<10;i++)box(workshop,woodLight,.13,.1,4.4,-5.6+i*1.24,4.42,-4.15);
+    box(workshop,warmGlow,10.7,.035,.055,0,4.23,-5.6);glow(workshop,0,3.4,-4,8);
+    box(workshop,wood,4.3,.17,1.05,-2.4,1.25,-4.65);for(const x of[-4.15,-.65])box(workshop,dark,.08,1.08,.7,x,.64,-4.65);
+    box(workshop,dark,2.6,1.8,1.1,3.3,1.2,-4.7);for(let i=0;i<5;i++)box(workshop,brass,.65,.025,.04,3.3,.56+i*.29,-4.13);
+    box(workshop,dark,3.8,1.6,.08,-2.4,2.7,-5.62);for(let i=0;i<7;i++){box(workshop,brass,.06,.46,.06,-3.8+i*.47,2.85,-5.51);cylinder(workshop,brass,.07,.12,-3.8+i*.47,1.4,-4.5,10);}
+    cylinder(workshop,standard('#7e8676'),4.7,.15,0,.36,2.05,64);cylinder(workshop,standard('#b7b4a4'),4.45,.035,0,.46,2.05,64);
+    for(const x of[-5.8,5.8]){box(workshop,dark,.09,2.5,.09,x,1.55,4.5);box(workshop,warmGlow,.34,.09,.34,x,2.83,4.5);}
+    let landscapeReady=false;
+    let worldDetails: ReturnType<typeof addWorldDetails> | undefined;
+    let applyGardenConfig: ((config:HomeConfig)=>void) | undefined;
+    cleanups.push(()=>worldDetails?.dispose());
+    let landscapeLoading: Promise<void> | undefined;
+    const ensureLandscape = () => landscapeLoading ??= buildLandscape();
+    async function buildLandscape() {
+    if(latest.current.campus==='porsche-rd') {
+      const ground=mesh(new THREE.PlaneGeometry(100,95),standard('#686d71'),terrain,0,-.025,0,false);
+      ground.rotation.x=-Math.PI/2;ground.name='industrial-ground';
+      worldDetails=addWorldDetails(world,island);worldDetails.setCampus('porsche-rd');
+      island.children.forEach(child=>{child.visible=child.name==='porsche-rd';});
+      await mergeStaticMeshes(island,()=>stopped);
+      return;
+    }
     const terrainHeight=(x:number,z:number)=>{
       const radius=Math.hypot(x/45,z/37);
       const edge=THREE.MathUtils.smoothstep(radius,1,1.55);
       const approach=1-THREE.MathUtils.smoothstep(Math.abs(x-6),4,13)
         *THREE.MathUtils.smoothstep(z,27,40)*(1-THREE.MathUtils.smoothstep(z,56,69));
-      const ridge=5.8*Math.exp(-((x-46)**2/850+(z+34)**2/740));
-      const basin=-3.7*Math.exp(-((x+46)**2/650+(z-17)**2/580));
-      return -.025+edge*approach*(ridge+basin+2.2*Math.sin(x*.065)*Math.cos(z*.073));
+      const ridge=4.9*Math.exp(-((x-38)**2/425+(z+29)**2/370));
+      const basin=-3.1*Math.exp(-((x+39)**2/325+(z-17)**2/290));
+      return -.025+edge*approach*(ridge+basin+1.85*Math.sin(x*.065)*Math.cos(z*.073));
     };
-    const groundGeometry=new THREE.PlaneGeometry(200,190,132,126);
+    const groundGeometry=new THREE.PlaneGeometry(85,80,56,54);
     groundGeometry.rotateX(-Math.PI/2);
     const groundVertices=groundGeometry.attributes.position;
     for(let i=0;i<groundVertices.count;i++){
@@ -75,15 +143,17 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
     }
     groundGeometry.computeVertexNormals();
     mesh(groundGeometry,grass,terrain,0,0,0,false).castShadow=false;
-    const horizon=mesh(new THREE.CircleGeometry(330,96),grass,terrain,0,-4.8,0,false);
+    const horizon=mesh(new THREE.CircleGeometry(140,64),grass,terrain,0,-4.8,0,false);
     horizon.rotation.x=-Math.PI/2;
     horizon.castShadow=false;
 
+    latest.current.onLoadingProgress?.(16,'正在铺开草地');
+    await yieldToBrowser();if(stopped)return;
     // Scatter low meadow plants in patches, leaving the approach and sightlines clear.
     const meadowPatches=[
       [-11,10],[-15,22],[-28,10],[-30,-5],[-24,-26],
       [-11,-24],[3,-19],[14,-15],[23,6],[14,16],[1,21],
-      [-43,13],[-36,-31],[32,-30],[39,21],
+      [-38,13],[-36,-31],[32,-30],[39,21],
     ];
     const meadowCount=meadowPatches.length*22;
     const meadowStems=new THREE.InstancedMesh(
@@ -125,8 +195,8 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
       }
     }
     terrain.add(meadowStems,meadowBlooms,meadowGrasses);
-    const island=new THREE.Group();scene.add(island);
-    const world=new THREE.Group();scene.add(world);
+    latest.current.onLoadingProgress?.(23,'正在布置公共空间');
+    await yieldToBrowser();if(stopped)return;
     const pathMat=standard('#b7a88c'),pathEdge=standard('#9c947b');
     function path(points:[number,number][],width=1.65,closed=false){
       const curve=new THREE.CatmullRomCurve3(points.map(([x,z])=>new THREE.Vector3(x,.035,z)),closed),positions:number[]=[],indices:number[]=[];
@@ -152,18 +222,8 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
     path([[28,5],[27,2],[26,1.6]],1.25);
     path([[-23,-10],[-22,-11.5]],1.25);
     path([[-16,11],[-17,12.5]],1.25);
-    // A freestanding workshop: the open forecourt keeps all exploded parts in view.
-    const workshop=new THREE.Group();workshop.position.set(26,0,-6);world.add(workshop);
-    box(workshop,edgeStone,14,.24,16,0,.06,0);box(workshop,stone,13.6,.1,15.6,0,.23,0);
-    box(workshop,concrete,12,4.1,.25,0,2.35,-5.8);box(workshop,wood,12.6,.22,4.6,0,4.58,-4.15);
-    box(workshop,dark,.16,4.3,4.7,-5.9,2.4,-4.15);box(workshop,glass,.06,4.1,5.3,5.9,2.35,-3.35);
-    for(let i=0;i<10;i++)box(workshop,woodLight,.13,.1,4.4,-5.6+i*1.24,4.42,-4.15);
-    box(workshop,warmGlow,10.7,.035,.055,0,4.23,-5.6);glow(workshop,0,3.4,-4,8);
-    box(workshop,wood,4.3,.17,1.05,-2.4,1.25,-4.65);for(const x of[-4.15,-.65])box(workshop,dark,.08,1.08,.7,x,.64,-4.65);
-    box(workshop,dark,2.6,1.8,1.1,3.3,1.2,-4.7);for(let i=0;i<5;i++)box(workshop,brass,.65,.025,.04,3.3,.56+i*.29,-4.13);
-    box(workshop,dark,3.8,1.6,.08,-2.4,2.7,-5.62);for(let i=0;i<7;i++){box(workshop,brass,.06,.46,.06,-3.8+i*.47,2.85,-5.51);cylinder(workshop,brass,.07,.12,-3.8+i*.47,1.4,-4.5,10);}
-    cylinder(workshop,standard('#7e8676'),4.7,.15,0,.36,2.05,64);cylinder(workshop,standard('#b7b4a4'),4.45,.035,0,.46,2.05,64);
-    for(const x of[-5.8,5.8]){box(workshop,dark,.09,2.5,.09,x,1.55,4.5);box(workshop,warmGlow,.34,.09,.34,x,2.83,4.5);}
+    latest.current.onLoadingProgress?.(30,'正在布置记忆展亭');
+    await yieldToBrowser();if(stopped)return;
     // Glass memory pavilion: empty landscape panels are symbolic frames for the owner's stories.
     const pavilion=new THREE.Group();pavilion.position.set(-22,0,-16);world.add(pavilion);
     box(pavilion,edgeStone,10,.25,10,0,.08,0);box(pavilion,concrete,9.6,.16,9.6,0,.28,0);
@@ -193,6 +253,8 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
     for (const z of [1.15, 2.65]) box(pavilion, glass, 2.42, .57, .025, 2.5, 1.34, z);
     box(pavilion,woodLight,2.1,.19,.55,-2.5,.73,2.3);for(const x of[-3.3,-1.7])box(pavilion,dark,.07,.4,.4,x,.46,2.3);
     glow(pavilion,0,4.1,-1.3,6);box(pavilion,stone,5,.12,1,0,.19,5.2);box(pavilion,stone,5.6,.1,1,0,.07,6.1);
+    latest.current.onLoadingProgress?.(37,'正在布置露台');
+    await yieldToBrowser();if(stopped)return;
     // A separate garden terrace is the social address: chairs, tea, cards and a mailbox.
     const terrace=new THREE.Group();terrace.position.set(-21,0,18);world.add(terrace);
     cylinder(terrace,edgeStone,8,.25,0,.06,0,64);cylinder(terrace,stone,7.75,.12,0,.24,0,64);
@@ -213,23 +275,8 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
     const flag=box(mailbox,standard('#a86248'),.3,.15,.045,.52,2.04,0);flag.rotation.z=.15;
     box(terrace,wood,2.8,.16,.65,1.8,.83,5.6);for(const x of[.7,2.9])box(terrace,dark,.07,.5,.5,x,.5,5.6);
     glow(terrace,-.6,3.35,-.6,5);for(const x of[-3.6,2.4])box(terrace,warmGlow,.2,.15,.2,x,3.59,-.6);
-    // Reused instanced forest geometry keeps the larger map affordable to render.
-    const forestPositions:[number,number,number][]=[];
-    // Separate groves frame destinations without forming a continuous border.
-    const groves=[[-32,-29],[-15,-36],[19,-30],[39,-16],[-34,20]];
-    for(const [cx,cz] of groves){
-      for(let i=0;i<6;i++){
-        forestPositions.push([cx+(rand()-.5)*9,cz+(rand()-.5)*7,.72+rand()*.55]);
-      }
-    }
-    forestPositions.push([-14,-18,1.2],[9,-17,1.35],[13,10,.9],[-14,5,1.1]);
-    const forestTrunks=new THREE.InstancedMesh(new THREE.CylinderGeometry(.13,.19,2.9,7),wood,forestPositions.length);
-    const forestCanopies=new THREE.InstancedMesh(new THREE.ConeGeometry(1.15,2.4,8),leaf,forestPositions.length*3);
-    const forestDummy=new THREE.Object3D(),forestColor=new THREE.Color();
-    forestPositions.forEach(([x,z,s],i)=>{
-      forestDummy.position.set(x,terrainHeight(x,z)+1.43*s,z);forestDummy.rotation.set(0,0,0);forestDummy.scale.set(s,s,s);forestDummy.updateMatrix();forestTrunks.setMatrixAt(i,forestDummy.matrix);
-      for(let j=0;j<3;j++){forestDummy.position.set(x,terrainHeight(x,z)+(2.15+j*.7)*s,z);forestDummy.rotation.y=i*.63;forestDummy.scale.setScalar(s*(1-j*.17));forestDummy.updateMatrix();forestCanopies.setMatrixAt(i*3+j,forestDummy.matrix);forestColor.set(i%3?'#687f50':'#526b48');forestCanopies.setColorAt(i*3+j,forestColor);}
-    });forestTrunks.castShadow=true;forestCanopies.castShadow=true;world.add(forestTrunks,forestCanopies);
+    latest.current.onLoadingProgress?.(44,'正在布置庭院');
+    await yieldToBrowser();if(stopped)return;
     for(const[x,z]of[[14,-4],[-13,-9],[-10,13],[-9,-25],[10,-24],[26,-17],[28,10],[9,25],[-13,27]] as number[][]){cylinder(world,dark,.045,1.45,x,.72,z,8);box(world,warmGlow,.22,.085,.22,x,1.48,z);}
     for(const[x,z,s]of[[-31,-21,1.3],[35,-16,1.5],[-30,28,1.3],[-10,-30,1.1]] as number[][]){sphere(world,edgeStone,1,x,.38,z,s,.55*s,s*.8);sphere(world,leaf,.7,x+1.2,.25,z+.5,1,.6,1);}
     box(island,edgeStone,24,.5,21,0,-.21,0);box(island,grass,23.8,.12,20.8,0,.07,0);
@@ -242,9 +289,8 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
     for(let i=0;i<10;i++) {const z=9.6-i*.83;const x=7.7-Math.sin(i*.32)*1.65;box(island,concrete,1.6,.10,.62,x,.18,z);}
     for(let i=0;i<7;i++)box(island,stone,1.13,.12,.7,-1.5-i*.84,.15,5.45+i*.2);
     for(let i=0;i<9;i++)box(island,concrete,.95,.07,.52,-6.8+i*1.08,.14,8.8);
-    const architecture=new THREE.Group();island.add(architecture);
-    const buildings:Record<HomeConfig['architecture'],THREE.Group>={courtyard:new THREE.Group(),pavilion:new THREE.Group(),alpine:new THREE.Group()};
-    function glow(parent:THREE.Object3D,x:number,y:number,z:number,intensity=5){const p=new THREE.PointLight('#ffdca3',intensity,7,2);p.position.set(x,y,z);parent.add(p);allFixtures.push(p);return p;}
+    latest.current.onLoadingProgress?.(52,'正在准备家的建筑');
+    await yieldToBrowser();if(stopped)return;
     function room(parent:THREE.Group,x:number,z:number,w:number,d:number,h=3.8,roofMaterial=concrete){
       box(parent,stone,w+.55,.3,d+.55,x,.37,z);
       box(parent,concrete,w,.18,d,x,h+.45,z);
@@ -264,7 +310,7 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
       cylinder(parent,stone,.45,.06,x+.8,1.07,z+.65,24);cylinder(parent,brass,.07,.2,x+.8,1.2,z+.65);
     }
     function buildVilla(kind:HomeConfig['architecture']){
-      const b=buildings[kind];architecture.add(b);
+      const b=buildings[kind];if(b.children.length)return b;architecture.add(b);
       if(kind==='courtyard'){
         room(b,-3.8,-4,7.2,4.5);room(b,1.85,-5.1,4.1,6.7,3.8);
         box(b,wood,2.2,3.65,.24,-6.2,2.36,-1.65);for(let i=0;i<13;i++)box(b,woodLight,.045,3.58,.09,-7.2+i*.15,2.36,-1.49);
@@ -285,9 +331,8 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
       box(b,edgeStone,.85,4.8,.9,-6.1,2.9,-6);box(b,wood,.9,1.9,.07,-3.4,1.6,-6.11);
       return b;
     }
-    buildVilla('courtyard');buildVilla('pavilion');buildVilla('alpine');
+
     // Open carport doubles as the small private workshop.
-    const carport=new THREE.Group();carport.position.set(3.15,0,.25);island.add(carport);
     box(carport,stone,5.1,.14,6.3,0,.18,0);
     for(const x of[-2.35,2.35])for(const z of[-2.8,2.8])box(carport,dark,.12,3.2,.12,x,1.95,z);
     box(carport,wood,5.2,.18,6.4,0,3.64,0);box(carport,concrete,5.6,.14,6.8,0,3.81,0);
@@ -297,24 +342,6 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
     const workbench=box(island,wood,2.1,.16,.8,6.6,1.15,-1.4);workbench.castShadow=true;
     for(const x of[5.7,7.5])box(island,dark,.07,.94,.07,x,.65,-1.4);
     box(island,dark,.75,.31,.38,6.7,1.4,-1.4);cylinder(island,brass,.09,.17,5.95,1.33,-1.3);
-    // Planter edges and layered planting bring softness to the architecture.
-    const plantsRoot=new THREE.Group();island.add(plantsRoot);
-    const plantTypes:Record<HomeConfig['plants'],THREE.Group>={pine:new THREE.Group(),olive:new THREE.Group(),cypress:new THREE.Group()};
-    function tree(parent:THREE.Object3D,kind:HomeConfig['plants'],x:number,z:number,size:number){
-      const g=new THREE.Group();g.position.set(x,.16,z);g.scale.setScalar(size);parent.add(g);
-      cylinder(g,wood,.12,2.5,0,1.25,0,8);
-      if(kind==='pine'){
-        for(let i=0;i<4;i++){const cone=mesh(new THREE.ConeGeometry(1.25-i*.23,1.8,9),i%2?leaf:leafLight,g,0,1.9+i*.7,0);cone.rotation.y=i*.6;}
-      }else if(kind==='cypress'){
-        sphere(g,leaf,1,0,2.6,0,.61,2,.63);sphere(g,leafLight,.7,.08,3.5,0,.6,1.55,.6);
-      }else{
-        const branchPoints=[[-.7,2.35,.1],[.65,2.5,.2],[0,2.7,-.6]];
-        for(const p of branchPoints){line(g,wood,new THREE.Vector3(0,1.4,0),new THREE.Vector3(...p as [number,number,number]),.075);sphere(g,leafLight,1.06,p[0],p[1]+.34,p[2],1,.76,.85);sphere(g,leaf,.75,p[0]+.23,p[1]+.55,p[2]-.12,1,.76,.85);}
-      }
-      return g;
-    }
-    const treePositions=[[-9,-6,1.4],[-9,0,1.15],[-9.3,5.6,.95],[-7.3,-8.2,1.2],[-2.8,-8.8,1.25],[3.4,-8.6,1.3],[8.7,-6,1.4],[9,-1.3,1.2],[9.5,5.6,.9],[-1.3,8.5,.8]];
-    for(const kind of['pine','olive','cypress'] as const){plantsRoot.add(plantTypes[kind]);treePositions.forEach(([x,z,s])=>tree(plantTypes[kind],kind,x,z,s));}
     const flowerMats=['#b5b48b','#e3ceb0','#a88b8a','#cbb98c'].map(c=>standard(c));
     for(let i=0;i<26;i++){
       const side=i<13?-1:1,x=side*(8.8+rand()*.7),z=-8.4+(i%13)*1.32;
@@ -335,33 +362,170 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
     const pebbleGeo=new THREE.IcosahedronGeometry(.12,0),pebbleMat=standard('#d0c8b4');
     const pebbles=new THREE.InstancedMesh(pebbleGeo,pebbleMat,140);const dummy=new THREE.Object3D();
     for(let i=0;i<140;i++){dummy.position.set(-10.1+rand()*1.3,.19,-9+rand()*18);dummy.scale.set(1+rand(),.5,1+rand());dummy.updateMatrix();pebbles.setMatrixAt(i,dummy.matrix);}island.add(pebbles);
+    latest.current.onLoadingProgress?.(64,'正在准备车辆与环境');
+    await yieldToBrowser();if(stopped)return;
+    applyGardenConfig = (config:HomeConfig) => {
+      if(!latest.current.campus?.startsWith('porsche-'))buildVilla(config.architecture);
+      Object.entries(buildings).forEach(([key,b])=>b.visible=key===config.architecture);
+    };
+    applyGardenConfig(latest.current.config);
+    worldDetails=addWorldDetails(world,island);
+    worldDetails.setCampus(latest.current.campus);
+    await mergeStaticMeshes(world,()=>stopped);
+    await mergeStaticMeshes(island,()=>stopped);
+    if(stopped)return;
+    }
+    await mergeStaticMeshes(workshop,()=>stopped);
+    if(latest.current.view!=='workshop')await ensureLandscape();
+    if(stopped)return;
     const vehicleStage=new THREE.Group();
     scene.add(vehicleStage);
     const studioColor=new THREE.Color('#f3f4f5');
-    const car=createConceptCar(latest.current.config.carColor);car.group.position.set(3.12,.255,4.3);car.group.rotation.y=-.06;vehicleStage.add(car.group);
-    const worldDetails=addWorldDetails(world,island);
-    const pets = { cat: makeGardenPet('cat'), dog: makeGardenPet('dog') };
-    for (const animal of Object.values(pets)) {
-      animal.group.visible = false;
-      island.add(animal.group);
+    const car=createConceptCar(latest.current.config.carColor);car.group.position.set(3.12,.255,.25);car.group.rotation.y=-.06;vehicleStage.add(car.group);
+    let researchParking = latest.current.campus === 'porsche-rd' ? createResearchParking(car.group, car.paint) : new THREE.Group();
+    researchParking.visible = false;
+    vehicleStage.add(researchParking);
+    latest.current.onLoadingProgress?.(75,'正在准备庭院伙伴');
+    await yieldToBrowser();if(stopped)return;
+    const chickens = new THREE.Group();
+    chickens.name = 'garden-chickens';
+    island.add(chickens);
+    const feathers = standard('#f4ead5'), comb = standard('#bd3930'), beak = standard('#db9b38');
+    for (const [x,z,heading] of [[-4,5,.3],[-5.2,5.8,1.5],[-3.3,6.7,-.8],[-5.6,7.3,2.4],[-4.3,8.1,.7],[-2.5,8.4,-1.4],[-6.1,4.3,2.8]]) {
+      const chicken = new THREE.Group();
+      chicken.position.set(x,.25,z);
+      chicken.rotation.y = heading;
+      chickens.add(chicken);
+      sphere(chicken,feathers,.32,0,.48,0,1,1.1,1.4);
+      sphere(chicken,feathers,.19,0,.83,.31);
+      sphere(chicken,comb,.1,0,1.01,.31,.6,1,1.5);
+      sphere(chicken,comb,.07,0,.7,.46,.6,1.4,1);
+      const bill = mesh(new THREE.ConeGeometry(.075,.19,4),beak,chicken,0,.82,.52);
+      bill.rotation.x = Math.PI / 2;
+      for (const side of [-1,1]) {
+        sphere(chicken,dark,.025,side*.16,.87,.4);
+        sphere(chicken,feathers,.21,side*.25,.49,-.04,.45,1,1.5);
+        cylinder(chicken,beak,.025,.25,side*.12,.15,.02,6);
+        box(chicken,beak,.09,.035,.18,side*.12,.035,.08);
+      }
+      const tail = sphere(chicken,feathers,.23,0,.65,-.39,.6,1.4,.65);
+      tail.rotation.x = -.5;
     }
+    const chickenOrigins = chickens.children.map(chicken => chicken.position.clone());
+    let chickenTime = 0;
+    function moveChickens(delta: number) {
+      chickenTime += delta;
+      chickens.children.forEach((chicken, index) => {
+        const origin = chickenOrigins[index];
+        const phase = index * 1.7;
+        const angle = phase + chickenTime * (.3 + index * .025);
+        chicken.position.set(
+          origin.x + .55 * (Math.sin(angle) - Math.sin(phase)),
+          origin.y + .025 * Math.abs(Math.sin(chickenTime * 7 + phase)),
+          origin.z + .4 * (Math.cos(angle) - Math.cos(phase)),
+        );
+        chicken.rotation.y = Math.atan2(.55 * Math.cos(angle), -.4 * Math.sin(angle));
+      });
+    }
+    const pets: Partial<Record<'cat'|'dog', ReturnType<typeof makeGardenPet>>> = {};
     const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    latest.current.onLoadingProgress?.(35,'正在唤醒你的 911');
+    latest.current.onLoadingProgress?.(82,'正在准备灯光');
     let displayCar:DisplayCar|null=null;
+    let partModules:PartModules|null=null;
     const guideMaterial = new THREE.LineDashedMaterial({ color: '#8e6260', dashSize: .09, gapSize: .07, transparent: true, opacity: .85, depthWrite: false });
     const guides: { part: DisplayCar['parts'][number]; line: THREE.Line; anchor: THREE.Vector3 }[] = [];
-    let readyPending=false;
-    const mechanics=createMechanicalAssembly();
+    cleanups.push(()=>guideMaterial.dispose());
+    let readyPending=true,carLoadStarted=false,carLoadFailed=false;
+    const mechanics: ReturnType<typeof createMechanicalAssembly> = { group: new THREE.Group(), parts: [] };
     const engineRoot=mechanics.group;engineRoot.position.copy(car.group.position);engineRoot.rotation.copy(car.group.rotation);engineRoot.visible=false;vehicleStage.add(engineRoot);
     const workshopExhibits = new Map<string, WorkshopExhibit>();
     let activeExhibit: WorkshopExhibit | undefined;
     let activeModelId: string | undefined;
     const pendingExhibits = new Map<string, Promise<WorkshopExhibit>>();
+    const reportExhibit=(status:'loading'|'ready'|'error')=>{setExhibitState(status);latest.current.onExhibitStatus?.(status);};
+    const cacheExhibit=(modelId:string,exhibit:WorkshopExhibit)=>{
+      if(workshopExhibits.has(modelId))return;
+      workshopExhibits.set(modelId,exhibit);exhibit.group.visible=false;vehicleStage.add(exhibit.group);
+    };
+    // Single code path for building a workshop exhibit: used when one is selected, and when
+    // the garden prewarms the default model in the background (see prewarmWorkshop).
+    const ensureExhibit=(modelId:string)=>{
+      let pending=pendingExhibits.get(modelId);
+      if(!pending){
+        pending=(async () => {
+          await yieldToBrowser();
+          const create = workshopModels.find(model => model.id === modelId)?.create;
+          if(!create)throw new Error(`no exhibit factory for ${modelId}`);
+          const exhibit = await create(downloads.signal);
+          try {
+            if(!stopped)await prepare(exhibit.group);
+            return exhibit;
+          } catch(error) { disposeSceneObject(exhibit.group);throw error; }
+        })();
+        pendingExhibits.set(modelId, pending);
+        // Cache as soon as it lands so a prewarmed model opens without a second wait.
+        void pending.then(exhibit=>{
+          if(stopped){disposeSceneObject(exhibit.group);return;}
+          pendingExhibits.delete(modelId);
+          cacheExhibit(modelId,exhibit);
+        },()=>{pendingExhibits.delete(modelId);});
+      }
+      return pending;
+    };
+    let prewarmStarted=false;
+    // Rolling rAF frame interval: how well the app is keeping up. Prewarm spends real main-thread
+    // time (parse + shader compile), so it only runs when there is frame budget to spare — on a
+    // device that is already struggling we keep the prefetched bytes and skip the CPU stage.
+    let frameCostEma=16.7,prevFrameAt=0,frameSamples=0;
+    const prewarmWorkshop=()=>{
+      if(prewarmStarted||stopped)return;
+      const model = workshopModels.find(({id}) => id === latest.current.workshopModelId) ?? workshopModels[0];
+      if(!model?.create||workshopExhibits.has(model.id))return;
+      prewarmStarted=true;
+      const warm=()=>{
+        if(stopped||workshopExhibits.has(model.id))return;
+        // Judge the budget only on frames rendered after the world was ready — the tail of the
+        // load itself is always slow and would otherwise always veto the prewarm. Waiting costs
+        // nothing here: the bytes are already in hand, this only delays the parse + compile.
+        if(frameSamples<8){setTimeout(warm,250);return;}
+        if(frameCostEma>33){console.info('Workshop prewarm skipped: frame budget tight');return;}
+        void ensureExhibit(model.id).catch(error=>{if(!stopped)console.warn('Workshop prewarm failed',error);});
+      };
+      const requestIdle=(globalThis as typeof globalThis & {requestIdleCallback?:(cb:()=>void,options?:{timeout:number})=>number}).requestIdleCallback;
+      const afterBytes=()=>{ if(requestIdle)requestIdle(warm,{timeout:3000});else setTimeout(warm,1500); };
+      // Bytes first (network only, no main-thread cost), then parse + shader compile while
+      // the garden is idle — so walking into the workshop no longer stalls on a cold load.
+      if(model.prefetch)void model.prefetch().then(afterBytes,afterBytes);else afterBytes();
+    };
     let cameraFocus: THREE.Vector3 | null = null;
+    let mechanicsLoading: Promise<void> | undefined;
+    const ensureMechanics = () => mechanicsLoading ??= (async () => {
+      const { createMechanicalAssembly } = await import('../lib/mechanical-assembly');
+      await yieldToBrowser();if(stopped)return;
+      const built = createMechanicalAssembly();
+      try { if (!await prepare(built.group)) { disposeSceneObject(built.group);return; } }
+      catch(error){disposeSceneObject(built.group);throw error;}
+      mechanics.parts=built.parts;
+      engineRoot.add(built.group);refresh();
+    })().catch(error=>{mechanicsLoading=undefined;if(!stopped)console.warn('Mechanical detail unavailable',error);});
 
-    loadDisplayCar(latest.current.config.carColor,fraction=>{if(!stopped)latest.current.onLoadingProgress?.(38+Math.min(1,fraction)*47,'正在载入 911 Carrera 4S');}).then(loaded=>{
-      if(stopped){loaded.group.traverse(n=>{if(n instanceof THREE.Mesh)n.geometry.dispose();});return;}
+
+    async function loadMainCar() {
+      await yieldToBrowser();if(stopped)return;
+      // 主角车（庭院 / 欢迎镜头）= 911 GT3 RS：与车库展车同一台车模，车色与轮圈跟随配置面板。
+      const { loadGt3RsDisplay } = await import('../lib/gt3-rs');
+      if(stopped)return;
+      const loaded = await loadGt3RsDisplay(latest.current.config.carColor);
+      if(stopped){disposeSceneObject(loaded.group);return;}
+      try { if(!await prepare(loaded.group)){disposeSceneObject(loaded.group);return;} }
+      catch(error){disposeSceneObject(loaded.group);throw error;}
+
       displayCar=loaded;loaded.group.position.copy(car.group.position);loaded.group.rotation.copy(car.group.rotation);vehicleStage.add(loaded.group);car.group.visible=false;
+      vehicleStage.remove(researchParking);
+      disposeResearchParking(researchParking);
+      researchParking = latest.current.campus === 'porsche-rd' ? createResearchParking(loaded.group, loaded.paint) : new THREE.Group();
+      researchParking.visible = latest.current.campus === 'porsche-rd';
+      vehicleStage.add(researchParking);
       for (const part of loaded.parts) {
         const anchor = new THREE.Box3().setFromObject(part.group).getCenter(new THREE.Vector3());
         loaded.group.worldToLocal(anchor);
@@ -374,9 +538,9 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
       }
 
       loaded.paint.color.set(latest.current.config.carColor);loaded.rims.forEach(m=>m.color.set(latest.current.config.wheels==='black'?'#353a36':'#c0c5c3'));
-      container.dataset.carModel='carrera-4s';
-      latest.current.onLoadingProgress?.(96,'正在点亮车库与庭院');readyPending=true;
-    }).catch((error)=>{if(stopped)return;console.warn('911 model unavailable',error);container.dataset.carModel='concept-fallback';latest.current.onLoadingProgress?.(96,'概念车型已就绪');readyPending=true;});
+      container.dataset.carModel='gt3-rs';
+      refresh();
+    }
     // Rain and stars remain light enough for a laptop browser.
     const rainCount=1000,rainPositions=new Float32Array(rainCount*6);
     for(let i=0;i<rainCount;i++){const x=(rand()-.5)*88,y=rand()*17,z=(rand()-.5)*76;rainPositions.set([x,y,z,x-.05,y-.38,z+.02],i*6);}
@@ -389,20 +553,30 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
     const desiredCamera=new THREE.Vector3(),desiredTarget=new THREE.Vector3();
     const sunTarget=new THREE.Color(),fogTarget=new THREE.Color();let ambientTarget=1.15,sunIntensity=3.35,exposureTarget=1.02;
     function setView(v:Props['view']){
+      refresh();
       cameraFocus=null;
       currentView=v;transition=true;const narrow=container.clientWidth<650,aspect=container.clientWidth/Math.max(container.clientHeight,1);
       const studio=v==='workshop';
-      terrain.visible=world.visible=island.visible=true;
+      if(!studio&&!landscapeReady&&!landscapeLoading){
+        latest.current.onLoadingProgress?.(8,'正在准备庭院');
+        void ensureLandscape().then(async()=>{
+          if(stopped)return;
+          setConfig(latest.current.config);
+          if(!await prepare(scene))return;
+          landscapeReady=true;readyPending=true;
+        }).catch(error=>{if(!stopped){console.warn('Landscape unavailable',error);setFailed(true);latest.current.onReady?.();}});
+      }
+      terrain.visible=island.visible=!studio;world.visible=true;
 
       camera.clearViewOffset();
-      if(studio)camera.setViewOffset(container.clientWidth||1,container.clientHeight||1,0,(container.clientHeight||1)*.12,container.clientWidth||1,container.clientHeight||1);
-      camera.fov=v==='entry'?(narrow?54:42):v==='map'?42:38;camera.updateProjectionMatrix();
+      if(studio)camera.setViewOffset(container.clientWidth||1,container.clientHeight||1,0,(container.clientHeight||1)*(narrow?.22:.12),container.clientWidth||1,container.clientHeight||1);
+      camera.fov=v==='entry'?(narrow?54:42):(v==='map'||v==='home')?42:38;camera.updateProjectionMatrix();
       controls.maxDistance=350;controls.minDistance=v==='map'?30:5;
       if(v==='entry'){
         if(entranceStarted){desiredCamera.set(narrow?8:10.5,3.35,narrow?55:43);desiredTarget.set(4.5,1.9,25);}
         else{desiredCamera.set(narrow?10:12,3.5,narrow?63:50);desiredTarget.set(5,2,29);}
         controls.minDistance=7;controls.maxDistance=70;
-      }else if(v==='map'){
+      }else if(v==='map'||(v==='home'&&!latest.current.campus?.startsWith('porsche-'))){
         const fit=Math.max(1,.98/aspect);desiredCamera.set(66*fit,58*fit,86*fit);desiredTarget.set(0,1,-4);
       }else if(v==='workshop'){
         const fit=Math.max(1,.9/aspect);
@@ -421,11 +595,13 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
         desiredCamera.set(narrow?27:21,narrow?23:16,narrow?34:25);desiredTarget.set(0,1.1,0);controls.minDistance=14;
       }
       if(scene.fog instanceof THREE.Fog){scene.fog.near=v==='map'?230:52;scene.fog.far=v==='map'?470:175;}
-      car.group.position.set(v==='workshop'?26:3.12,v==='workshop'?.49:.255,v==='workshop'?-3.95:4.3);
+      car.group.position.set(v==='workshop'?26:3.12,v==='workshop'?.49:.255,v==='workshop'?-3.95:.25);
       displayCar?.group.position.copy(car.group.position);engineRoot.position.copy(car.group.position);
+      if(reducedMotion){camera.position.copy(desiredCamera);controls.target.copy(desiredTarget);transition=false;}
     }
     function setConfig(c:HomeConfig){
-      Object.entries(buildings).forEach(([key,b])=>b.visible=key===c.architecture);Object.entries(plantTypes).forEach(([key,p])=>p.visible=key===c.plants);
+      refresh();
+      applyGardenConfig?.(c);
       car.paint.color.set(c.carColor);car.rims.color.set(c.wheels==='black'?'#353a36':'#c0c5c3');
       if(displayCar){displayCar.paint.color.set(c.carColor);displayCar.rims.forEach(m=>m.color.set(c.wheels==='black'?'#353a36':'#c0c5c3'));}
       const night=c.time==='night',day=c.time==='day',wet=c.weather==='rain';
@@ -436,75 +612,83 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
       rain.visible=wet;stars.visible=night&&!wet;allFixtures.forEach(l=>l.intensity=night?9:day?.3:4);warmGlow.emissiveIntensity=night?2:day?.15:.8;
       stone.roughness=wet?.48:.85;concrete.roughness=wet?.54:.85;
     }
-    runtime.current={setConfig,setView,setExplode:n=>{desiredExplode=THREE.MathUtils.clamp(n,0,1);}};
+    runtime.current={refresh,retryExhibit:()=>{activeModelId=undefined;refresh();},setConfig,setView,setExplode:n=>{desiredExplode=THREE.MathUtils.clamp(n,0,1);refresh();}};
     setConfig(latest.current.config);setView(latest.current.view);
     camera.position.copy(desiredCamera);controls.target.copy(desiredTarget);transition=false;
     const resize=()=>{const width=container.clientWidth||1,height=container.clientHeight||1;renderer.setSize(width,height,false);camera.aspect=width/height;camera.updateProjectionMatrix();setView(currentView);};
     const observer=new ResizeObserver(resize);observer.observe(container);resize();
+    cleanups.push(()=>observer.disconnect());
     let pointerStart={x:0,y:0};const down=(event:PointerEvent)=>{pointerStart={x:event.clientX,y:event.clientY};transition=false;};
     const raycaster=new THREE.Raycaster(),pointer=new THREE.Vector2();
     const up=(event:PointerEvent)=>{if(currentView!=='workshop'||Math.hypot(event.clientX-pointerStart.x,event.clientY-pointerStart.y)>6)return;const rect=renderer.domElement.getBoundingClientRect();pointer.set((event.clientX-rect.left)/rect.width*2-1,-(event.clientY-rect.top)/rect.height*2+1);raycaster.setFromCamera(pointer,camera);const roots=activeExhibit?[activeExhibit.group]:displayCar?[displayCar.group,...(engineRoot.visible?[engineRoot]:[])]:[car.group];const hits=raycaster.intersectObjects(roots,true);if(hits.length){let node:THREE.Object3D|null=hits[0].object;while(node&&!node.userData.part)node=node.parent;if(node?.userData.part)latest.current.onPartSelect?.(node.userData.part);}};
     renderer.domElement.addEventListener('pointerdown',down);renderer.domElement.addEventListener('pointerup',up);
-    let stopped=false,frame=0,lastTime=0,hasDrawnFrame=false;
+    cleanups.push(()=>{renderer.domElement.removeEventListener('pointerdown',down);renderer.domElement.removeEventListener('pointerup',up);});
+    let lastTime=0,hasDrawnFrame=false,lastAssemblyProgress=NaN;
+    let exhibitReadyPending=false;
+    latest.current.onLoadingProgress?.(92,'正在预热场景');
+    if(!await prepare(scene))return;
+    landscapeReady=!!landscapeLoading;
+
     const render=(time:number)=>{
       if(stopped)return;frame=requestAnimationFrame(render);const delta=Math.min((time-lastTime)/1000,.05)||.016;lastTime=time;
-      if(!latest.current.active&&hasDrawnFrame&&!readyPending)return;
+      if(prevFrameAt)frameCostEma=frameCostEma*.8+(time-prevFrameAt)*.2;frameSamples++;prevFrameAt=time;
+      if(document.hidden||(!latest.current.active&&hasDrawnFrame&&!readyPending&&!exhibitReadyPending))return;
+      if(currentView!=='workshop'&&!landscapeReady)return;
+      controls.update();
+      // Keep damping responsive, but skip settled garage animation and scene traversal work.
+      if(currentView==='workshop' && latest.current.workshopModelId===activeModelId &&
+        !dirty && !transition && !readyPending && !exhibitReadyPending &&
+        Math.abs(actualExplode-desiredExplode)<=.001 && time>=redrawUntil)return;
+      if (latest.current.active && currentView!=='workshop' && !reducedMotion) moveChickens(delta);
       for (const kind of ['cat', 'dog'] as const) {
+        if(latest.current.pet===kind&&!pets[kind]){pets[kind]=makeGardenPet(kind);island.add(pets[kind]!.group);}
         const animal = pets[kind];
+        if(!animal)continue;
         animal.group.visible = latest.current.pet === kind;
         if (animal.group.visible && !reducedMotion) animal.tail.rotation.y = Math.sin(time * .004) * .42;
       }
       if(latest.current.active){
-        gateOpen=THREE.MathUtils.lerp(gateOpen,1,1-Math.exp(-delta*1.4));worldDetails.setGateOpen(gateOpen);
-        if(currentView==='entry'&&!entranceStarted){entranceStarted=true;setView('entry');if(matchMedia('(prefers-reduced-motion: reduce)').matches){camera.position.copy(desiredCamera);controls.target.copy(desiredTarget);gateOpen=1;worldDetails.setGateOpen(1);transition=false;}}
+        if (latest.current.campus !== 'porsche-rd') { gateOpen=reducedMotion?1:THREE.MathUtils.lerp(gateOpen,1,1-Math.exp(-delta*1.4));worldDetails?.setGateOpen(gateOpen); }
+        if(currentView==='entry'&&!entranceStarted){entranceStarted=true;setView('entry');if(matchMedia('(prefers-reduced-motion: reduce)').matches){camera.position.copy(desiredCamera);controls.target.copy(desiredTarget);gateOpen=1;worldDetails?.setGateOpen(1);transition=false;}}
       }
       if(transition){camera.position.lerp(desiredCamera,1-Math.exp(-delta*3.2));controls.target.lerp(desiredTarget,1-Math.exp(-delta*3.2));if(camera.position.distanceTo(desiredCamera)<.025)transition=false;}
-      worldDetails.setCampus(latest.current.campus);
+      world.visible = latest.current.campus !== 'porsche-rd';
       architecture.visible = !latest.current.campus?.startsWith('porsche-');
       carport.visible = architecture.visible;
       const studio = currentView === 'workshop';
       const selectedModel = studio ? latest.current.workshopModelId : undefined;
+      if (studio && selectedModel === 'carrera-4s' && !mechanicsLoading)void ensureMechanics();
       if (selectedModel !== activeModelId) {
+        refresh();
+        exhibitReadyPending=false;lastAssemblyProgress=NaN;
         if (activeExhibit) activeExhibit.group.visible = false;
         activeModelId = selectedModel;
         activeExhibit = selectedModel ? workshopExhibits.get(selectedModel) : undefined;
         const create = workshopModels.find(model => model.id === selectedModel)?.create;
         if (selectedModel && create && !activeExhibit) {
-          latest.current.onExhibitStatus?.('loading');
-          let pending = pendingExhibits.get(selectedModel);
-          if (!pending) {
-            pending = Promise.resolve().then(create);
-            pendingExhibits.set(selectedModel, pending);
-          }
-          pending.then(exhibit => {
-            if (stopped) return;
-            pendingExhibits.delete(selectedModel);
-            if (!workshopExhibits.has(selectedModel)) {
-              workshopExhibits.set(selectedModel, exhibit);
-              exhibit.group.visible = false;
-              vehicleStage.add(exhibit.group);
-            }
-            if (activeModelId !== selectedModel) return;
+          reportExhibit('loading');
+          ensureExhibit(selectedModel).then(exhibit => {
+            if (stopped || activeModelId !== selectedModel) return;
             activeExhibit = exhibit;
             exhibit.group.visible = true;
             actualExplode = latest.current.explode;
-            latest.current.onExhibitStatus?.('ready');
+            exhibitReadyPending=true;
           }).catch(error => {
-            pendingExhibits.delete(selectedModel);
             if (stopped || activeModelId !== selectedModel) return;
             console.warn('Workshop model unavailable', error);
-            latest.current.onExhibitStatus?.('error');
+            reportExhibit('error');
           });
         } else {
           if (activeExhibit) activeExhibit.group.visible = true;
-          latest.current.onExhibitStatus?.('ready');
+          reportExhibit('ready');
         }
         actualExplode = latest.current.explode;
       }
       if (activeExhibit) {
         activeExhibit.group.position.copy(car.group.position);
         activeExhibit.group.rotation.copy(car.group.rotation);
-        activeExhibit.assemble?.(desiredExplode);
+        activeExhibit.syncOwned?.(latest.current.ownedParts ?? [], delta);
+        if(desiredExplode!==lastAssemblyProgress){activeExhibit.assemble?.(desiredExplode);lastAssemblyProgress=desiredExplode;}
       }
       const focus = activeExhibit?.focus?.(desiredExplode);
       if (focus && focus.target !== cameraFocus) {
@@ -518,9 +702,13 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
         cameraFocus = null;
         setView(currentView);
       }
-      const useMainCar = !workshopModels.some(model => model.id === selectedModel && model.create);
-      car.group.visible = useMainCar && !displayCar;
-      if (displayCar) displayCar.group.visible = useMainCar;
+      // 庭院 / 欢迎镜头始终摆主角车；车库视图里，选中的展车自带装配工厂时就让位给展车。
+      const useMainCar = !studio || !workshopModels.some(model => model.id === selectedModel && model.create);
+      const research = latest.current.campus === 'porsche-rd';
+      researchParking.visible = research && (!!displayCar || carLoadFailed);
+      chickens.visible = !research;
+      car.group.visible = useMainCar && carLoadFailed && !displayCar && !research;
+      if (displayCar) displayCar.group.visible = useMainCar && !research;
       actualExplode=THREE.MathUtils.lerp(actualExplode,desiredExplode,1-Math.exp(-delta*7));
       const partProgress=(part:DisplayCar['parts'][number])=>{
         const name=part.group.userData.part;
@@ -537,6 +725,14 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
         part.group.position.copy(part.origin).addScaledVector(part.offset,partProgress(part));
       }
       engineRoot.visible=useMainCar&&!!displayCar&&studio&&actualExplode<.86;
+      if (studio && useMainCar && displayCar && !partModules) {
+        partModules = createPartModules(displayCar);
+        partModules.sync(latest.current.ownedParts ?? [], 0);
+      }
+      if (partModules) {
+        partModules.group.visible = studio && useMainCar;
+        if (partModules.group.visible) partModules.sync(latest.current.ownedParts ?? [], delta);
+      }
       for (const { part, line, anchor } of guides) {
         const progress=partProgress(part);
         line.visible = studio && progress > .025 && part.offset.lengthSq() > .1;
@@ -549,23 +745,32 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
         distance.setX(1, shift.length() * progress);
         distance.needsUpdate = true;
       }
-      scene.background instanceof THREE.Color&&scene.background.lerp(fogTarget,.08);if(scene.fog instanceof THREE.Fog)scene.fog.color.copy(scene.background as THREE.Color);
+      if(scene.background instanceof THREE.Color)scene.background.lerp(fogTarget,.08);if(scene.fog instanceof THREE.Fog)scene.fog.color.copy(scene.background as THREE.Color);
       sunlight.color.lerp(studio?studioColor:sunTarget,.025);sunlight.intensity=THREE.MathUtils.lerp(sunlight.intensity,studio?3:sunIntensity,.025);ambient.intensity=THREE.MathUtils.lerp(ambient.intensity,studio?1.7:ambientTarget,.025);renderer.toneMappingExposure=THREE.MathUtils.lerp(renderer.toneMappingExposure,studio?1.12:exposureTarget,.025);
       rain.visible=!studio&&latest.current.config.weather==='rain';
       stars.visible=!studio&&latest.current.config.time==='night'&&!rain.visible;
       scene.environmentIntensity=studio?.9:latest.current.config.time==='night'?.2:latest.current.config.time==='day'?.5:.42;
       if(rain.visible){const points=rainGeometry.attributes.position.array as Float32Array;for(let i=0;i<rainCount;i++){points[i*6+1]-=delta*9;points[i*6+4]-=delta*9;if(points[i*6+1]<0){points[i*6+1]+=17;points[i*6+4]+=17;}}rainGeometry.attributes.position.needsUpdate=true;}
-      controls.update();renderer.render(scene,camera);
+      const animated = transition || rain.visible || (!reducedMotion && !studio && !research) ||
+        (!studio && !research && gateOpen < .999) || Math.abs(actualExplode-desiredExplode)>.001 || time<redrawUntil;
+      if(!dirty&&!animated&&!readyPending&&!exhibitReadyPending)return;
+      renderer.render(scene,camera);dirty=false;
       hasDrawnFrame=true;
-      if(readyPending){readyPending=false;latest.current.onLoadingProgress?.(100,'欢迎回家。');latest.current.onReady?.();}
+      if(exhibitReadyPending){exhibitReadyPending=false;reportExhibit('ready');}
+      if(readyPending && (!useMainCar || displayCar || carLoadFailed)){readyPending=false;latest.current.onLoadingProgress?.(100,'欢迎回家。');latest.current.onReady?.();frameCostEma=16.7;frameSamples=0;prevFrameAt=0;prewarmWorkshop();}
+      if(!carLoadStarted && useMainCar){
+        carLoadStarted=true;
+        if(readyPending)latest.current.onLoadingProgress?.(96,'正在准备 911');
+        void loadMainCar().catch(error=>{if(!stopped){console.warn('911 model unavailable',error);carLoadFailed=true;container.dataset.carModel='concept-fallback';refresh();}});
+      }
       const placed:{x:number;y:number;width:number;height:number}[]=[];
       DESTINATIONS.forEach(place=>{
         const button=hotspots.current[place.id];if(!button)return;
-        if(currentView!=='map'){button.style.visibility='hidden';return;}
+        if(currentView!=='map'&&currentView!=='home'){button.style.visibility='hidden';return;}
         const projected=new THREE.Vector3(...place.position).project(camera);
         if(projected.z>1||projected.z<0||Math.abs(projected.x)>1.15||Math.abs(projected.y)>1.15){button.style.visibility='hidden';return;}
         const width=container.clientWidth,height=container.clientHeight,bw=button.offsetWidth||116,bh=button.offsetHeight||52;
-        let x=THREE.MathUtils.clamp((projected.x*.5+.5)*width,bw/2+8,width-bw/2-8),y=THREE.MathUtils.clamp((-projected.y*.5+.5)*height,125,height-145);
+        const x=THREE.MathUtils.clamp((projected.x*.5+.5)*width,bw/2+8,width-bw/2-8);let y=THREE.MathUtils.clamp((-projected.y*.5+.5)*height,125,height-145);
         for(let pass=0;pass<5;pass++){
           const collision=placed.find(p=>Math.abs(p.x-x)<(p.width+bw)/2+5&&Math.abs(p.y-y)<(p.height+bh)/2+5);
           if(!collision)break;y=Math.min(height-145,collision.y+(collision.height+bh)/2+9);
@@ -574,16 +779,25 @@ export default function GardenScene({config,view,workshopModelId,campus,explode,
       });
     };
     frame=requestAnimationFrame(render);
-    return()=>{stopped=true;cancelAnimationFrame(frame);observer.disconnect();controls.dispose();renderer.domElement.removeEventListener('pointerdown',down);renderer.domElement.removeEventListener('pointerup',up);scene.traverse(node=>{if(node instanceof THREE.Mesh||node instanceof THREE.Points||node instanceof THREE.Line){node.geometry.dispose();const mats=Array.isArray(node.material)?node.material:[node.material];mats.forEach(m=>m.dispose());}});guideMaterial.dispose();worldDetails.dispose();environment.dispose();renderer.dispose();renderer.domElement.remove();runtime.current=null;};
-  },[]);
+    }
+    void initialize().catch(error=>{
+      if(stopped)return;
+      console.warn('Scene initialization failed',error);
+      cleanup();setFailed(true);latest.current.onReady?.();
+    });
+    return cleanup;
+  },[attempt]);
+  useEffect(()=>{runtime.current?.refresh();},[active,pet,ownedParts]);
   useEffect(()=>{runtime.current?.setConfig(config);},[config]);
   useEffect(()=>{runtime.current?.setView(view);},[view]);
   useEffect(()=>{runtime.current?.setExplode(explode);},[explode]);
   const exhibitName = view === 'workshop'
     ? workshopModels.find(model => model.id === workshopModelId)?.name
     : undefined;
-  return <div ref={host} className="garden-canvas" style={{width:'100%',height:'100%',position:'relative'}} aria-label={exhibitName ? `工坊展车 ${exhibitName}，可拖动旋转与缩放` : "可拖动、缩放和平移探索的保时捷之家地图"}>
-    {DESTINATIONS.map(place=><button key={place.id} ref={node=>{hotspots.current[place.id]=node;}} type="button" className="world-hotspot" aria-label={`进入${place.name}`} onClick={()=>latest.current.onPlaceSelect?.(place.id)} style={{position:'absolute',zIndex:5,top:0,left:0,visibility:'hidden',pointerEvents:'auto',cursor:'pointer',border:'1px solid rgba(255,255,255,.7)',background:'rgba(248,246,236,.94)',color:'#354b38',borderRadius:14,padding:'11px 15px',boxShadow:'0 7px 25px rgba(37,50,31,.15)',fontFamily:'inherit',backdropFilter:'blur(10px)',whiteSpace:'nowrap',textAlign:'left'}}>
+  return <div ref={host} className="garden-canvas" style={{width:'100%',height:'100%',position:'relative'}} aria-label={exhibitName ? `车库展车 ${exhibitName}，可拖动旋转与缩放` : "可拖动、缩放和平移探索的保时捷之家地图"}>
+    {view==='workshop'&&exhibitState!=='ready'&&<div role="status" style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',padding:'12px 18px',background:'rgba(248,246,236,.94)',borderRadius:8,zIndex:6}}>{exhibitState==='loading'?'正在准备车型…':<>车型暂时未能载入。<button onClick={()=>runtime.current?.retryExhibit()}>重新加载</button></>}</div>}
+    {failed && <div role="alert" className="private-garage-status">场景暂时未能载入。<button onClick={()=>{setFailed(false);setAttempt(value=>value+1);}}>重新加载</button></div>}
+    {DESTINATIONS.filter(place => campus !== 'porsche-rd' || place.id === 'home').map(place=><button key={place.id} ref={node=>{hotspots.current[place.id]=node;}} type="button" className="world-hotspot" aria-label={`进入${place.name}`} onClick={()=>latest.current.onPlaceSelect?.(place.id)} style={{position:'absolute',zIndex:5,top:0,left:0,visibility:'hidden',pointerEvents:'auto',cursor:'pointer',border:'1px solid rgba(255,255,255,.7)',background:'rgba(248,246,236,.94)',color:'#354b38',borderRadius:14,padding:'11px 15px',boxShadow:'0 7px 25px rgba(37,50,31,.15)',fontFamily:'inherit',backdropFilter:'blur(10px)',whiteSpace:'nowrap',textAlign:'left'}}>
       <span style={{display:'block',fontSize:13,fontWeight:600,letterSpacing:'.035em'}}><span style={{display:'inline-block',width:6,height:6,borderRadius:'50%',background:'#7e9567',marginRight:7,verticalAlign:'middle'}}/>{place.name}<span aria-hidden="true" style={{marginLeft:8,fontSize:12,opacity:.5}}>↗</span></span>
       <span style={{display:'block',marginTop:4,fontSize:8,letterSpacing:'.13em',opacity:.58}}>{place.subtitle}</span>
     </button>)}
